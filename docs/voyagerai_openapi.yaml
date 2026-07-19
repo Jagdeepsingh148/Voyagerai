@@ -5,14 +5,18 @@ info:
     Multi-agent travel planning platform API. Creating a trip starts an
     asynchronous LangGraph multi-agent run; human-in-the-loop checkpoints
     pause execution until the user approves via /trips/{trip_id}/approve.
-  version: 0.1.0
+    Flight data is served by an internal synthetic flight service (no
+    live GDS integration); this is transparent to API consumers since it
+    sits behind the same Tool Registry interface a real provider would use.
+  version: 0.2.0
 servers:
-  - url: https://api.voyagerai.app/v1
-    description: Production
+  - url: https://voyagerai-backend.onrender.com/v1
+    description: Production (Render free tier — replace with custom domain later)
   - url: http://localhost:8000/v1
     description: Local development
 
 tags:
+  - name: system
   - name: auth
   - name: users
   - name: preferences
@@ -20,6 +24,38 @@ tags:
   - name: sharing
 
 paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      description: >
+        Used by Render's deploy health check and uptime monitoring.
+        Returns 200 once the app is ready to accept traffic, including a
+        live check that the database and Redis connections are up.
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  database:
+                    type: string
+                    example: ok
+                  redis:
+                    type: string
+                    example: ok
+        '503':
+          description: One or more dependencies unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /auth/register:
     post:
       tags: [auth]
@@ -43,6 +79,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /auth/login:
     post:
@@ -67,6 +105,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /auth/refresh:
     post:
@@ -89,11 +129,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenPair'
+        '401':
+          description: Refresh token invalid or expired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /auth/password-reset/request:
     post:
       tags: [auth]
       summary: Request a password reset email
+      description: >
+        Sent via Resend. Always returns 202, even for unknown emails, to
+        avoid leaking which addresses are registered.
       requestBody:
         required: true
         content:
@@ -107,9 +156,9 @@ paths:
                   format: email
       responses:
         '202':
-          description: >
-            Reset email queued. Always returns 202, even for unknown emails,
-            to avoid leaking which addresses are registered.
+          description: Reset email queued
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /auth/password-reset/confirm:
     post:
@@ -206,6 +255,7 @@ paths:
       description: >
         Returns immediately with status "pending" while the agent graph
         runs asynchronously. Poll /trips/{trip_id}/status for progress.
+        Flight results come from the internal synthetic flight service.
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -220,6 +270,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Trip'
+        '429':
+          $ref: '#/components/responses/RateLimited'
     get:
       tags: [trips]
       summary: List the current user's trips
@@ -278,6 +330,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TripRunStatus'
+        '404':
+          description: Trip not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /trips/{trip_id}/approve:
     post:
@@ -285,7 +343,7 @@ paths:
       summary: Resume a paused graph run at a human-in-the-loop checkpoint
       description: >
         Used for the flight, hotel, and final itinerary approval gates.
-        Resumes the LangGraph run from its saved Postgres checkpoint.
+        Resumes the LangGraph run from its saved Postgres (Neon) checkpoint.
       security: [{bearerAuth: []}]
       parameters:
         - $ref: '#/components/parameters/TripId'
@@ -302,6 +360,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Trip'
+        '404':
+          description: Trip not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '409':
           description: Trip is not currently awaiting approval
           content:
@@ -324,6 +388,12 @@ paths:
               schema:
                 type: string
                 format: binary
+        '404':
+          description: Trip not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '409':
           description: Trip has no finalized plan yet
           content:
@@ -345,6 +415,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TripShare'
+        '404':
+          description: Trip not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /shared/{share_token}:
     get:
@@ -386,6 +462,14 @@ components:
       schema:
         type: string
         format: uuid
+
+  responses:
+    RateLimited:
+      description: Too many requests — Redis-based rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
 
   schemas:
     Error:
@@ -540,7 +624,7 @@ components:
         awaiting_approval_for:
           type: string
           nullable: true
-          enum: [flight, hotel, final_itinerary, null]
+          enum: [flight, hotel, final_itinerary]
 
     ApprovalRequest:
       type: object
