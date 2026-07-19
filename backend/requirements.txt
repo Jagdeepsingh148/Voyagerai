@@ -21,7 +21,7 @@ langchain-google-genai==2.0.1
 
 # ---------- Redis / caching / reliability ----------
 redis==5.0.8
-tenacity==9.0.0
+tenacity==8.5.0
 
 # ---------- Auth ----------
 python-jose[cryptography]==3.3.0
